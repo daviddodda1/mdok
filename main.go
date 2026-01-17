@@ -11,6 +11,7 @@ import (
 
 	"github.com/guptarohit/asciigraph"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -296,9 +297,20 @@ func runView(configName string, history bool) {
 		os.Exit(1)
 	}
 
-	// If --history flag is set, always show summary
+	// If --history flag is set, show interactive TUI or static summary
 	if history {
-		displaySummary(configName)
+		// Check if TTY for interactive mode
+		if isatty.IsTerminal(os.Stdout.Fd()) {
+			model := NewHistoryTUIModel(configName)
+			p := tea.NewProgram(model, tea.WithAltScreen())
+			if _, err := p.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// Non-TTY: fall back to static output
+			displaySummary(configName)
+		}
 		return
 	}
 
@@ -476,6 +488,22 @@ func displaySummary(configName string) {
 			fmt.Printf("  Net I/O:  rx=%s tx=%s\n",
 				formatBytes(s.NetRxTotal),
 				formatBytes(s.NetTxTotal))
+
+			// Network breakdown (if available)
+			if s.NetworkBreakdown != nil {
+				fmt.Printf("  Traffic:  ")
+				if s.NetworkBreakdown.InterContainerPct > 0 {
+					fmt.Printf("inter-container=%.1f%% ", s.NetworkBreakdown.InterContainerPct)
+				}
+				if s.NetworkBreakdown.InternalPct > 0 {
+					fmt.Printf("internal=%.1f%% ", s.NetworkBreakdown.InternalPct)
+				}
+				if s.NetworkBreakdown.InternetPct > 0 {
+					fmt.Printf("internet=%.1f%%", s.NetworkBreakdown.InternetPct)
+				}
+				fmt.Println()
+			}
+
 			fmt.Printf("  Block I/O: read=%s write=%s\n",
 				formatBytes(s.BlockReadTotal),
 				formatBytes(s.BlockWriteTotal))

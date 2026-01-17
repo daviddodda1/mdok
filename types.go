@@ -48,6 +48,11 @@ type Sample struct {
 	BlockReadRate   float64   `json:"block_read_rate"`   // bytes/sec
 	BlockWriteRate  float64   `json:"block_write_rate"`  // bytes/sec
 	PidsCount       uint64    `json:"pids_count"`
+
+	// Network connection breakdown (approximate)
+	NetConnInterContainer int `json:"net_conn_inter_container,omitempty"` // Connections to other containers
+	NetConnInternal       int `json:"net_conn_internal,omitempty"`        // Connections to internal/private IPs
+	NetConnInternet       int `json:"net_conn_internet,omitempty"`        // Connections to public IPs
 }
 
 // Summary contains calculated statistics for a metric
@@ -58,6 +63,13 @@ type Summary struct {
 	P95   float64 `json:"p95"`
 	P99   float64 `json:"p99"`
 	Total float64 `json:"total,omitempty"` // for cumulative metrics like network
+}
+
+// NetworkBreakdown contains estimated traffic distribution
+type NetworkBreakdown struct {
+	InterContainerPct float64 `json:"inter_container_pct"` // Estimated % to other containers
+	InternalPct       float64 `json:"internal_pct"`        // Estimated % to internal/private IPs
+	InternetPct       float64 `json:"internet_pct"`        // Estimated % to public internet
 }
 
 // ContainerSummary contains all summaries for a container
@@ -77,6 +89,7 @@ type ContainerSummary struct {
 	SampleCount   int     `json:"sample_count"`
 	Duration      string  `json:"duration"`
 	Warnings      []string `json:"warnings,omitempty"`
+	NetworkBreakdown *NetworkBreakdown `json:"network_breakdown,omitempty"` // Traffic distribution estimate
 }
 
 // NetworkCostEstimate contains AWS data transfer cost estimates
