@@ -1,5 +1,47 @@
-- name: Push binaries to release branch
-  run: |
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Build for Linux AMD64
+      run: |
+        GOOS=linux GOARCH=amd64 go build -o mdok-linux-amd64 .
+        chmod +x mdok-linux-amd64
+
+    - name: Build for Linux ARM64
+      run: |
+        GOOS=linux GOARCH=arm64 go build -o mdok-linux-arm64 .
+        chmod +x mdok-linux-arm64
+
+    - name: Create version info
+      run: |
+        echo "Built from commit: ${{ github.sha }}" > VERSION.txt
+        echo "Date: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)" >> VERSION.txt
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          echo "Version: ${GITHUB_REF#refs/tags/}" >> VERSION.txt
+        else
+          echo "Branch: ${GITHUB_REF#refs/heads/}" >> VERSION.txt
+        fi
+
+    - name: Push binaries to release branch
+      run: |
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
 
@@ -22,7 +64,7 @@
         cp ../VERSION.txt .
 
         # Create README for release branch
-        # NOTE: All lines below must be indented relative to the 'run' key
+        # All lines below are indented to maintain valid YAML syntax
         cat > README.md << EOF
         # mdok Binaries
 
@@ -53,15 +95,14 @@
         ## Build Info
         EOF
 
-        # This sed command removes the leading spaces from the README content 
-        # so that it doesn't look like code blocks in the final markdown file.
+        # Strip the leading 8 spaces used for YAML indentation from the README
         sed -i 's/^        //' README.md
-
+        
         cat VERSION.txt >> README.md
 
         # Commit and push
         git add mdok-linux-amd64 mdok-linux-arm64 VERSION.txt README.md
         git commit -m "Release binaries from ${{ github.sha }}" || echo "No changes to commit"
         git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} release
-  env:
+      env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
