@@ -1,0 +1,104 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Build for Linux AMD64
+      run: |
+        GOOS=linux GOARCH=amd64 go build -o mdok-linux-amd64 .
+        chmod +x mdok-linux-amd64
+
+    - name: Build for Linux ARM64
+      run: |
+        GOOS=linux GOARCH=arm64 go build -o mdok-linux-arm64 .
+        chmod +x mdok-linux-arm64
+
+    - name: Create version info
+      run: |
+        echo "Built from commit: ${{ github.sha }}" > VERSION.txt
+        echo "Date: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)" >> VERSION.txt
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          echo "Version: ${GITHUB_REF#refs/tags/}" >> VERSION.txt
+        else
+          echo "Branch: ${GITHUB_REF#refs/heads/}" >> VERSION.txt
+        fi
+
+    - name: Push binaries to release branch
+      run: |
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'actions@github.com'
+
+        # Clone the repo to a temp directory
+        git clone --branch release https://github.com/${{ github.repository }} release-branch 2>/dev/null || git clone https://github.com/${{ github.repository }} release-branch
+
+        cd release-branch
+
+        # Create orphan release branch if it doesn't exist
+        if ! git show-ref --verify --quiet refs/heads/release; then
+          git checkout --orphan release
+          git rm -rf . 2>/dev/null || true
+        else
+          git checkout release
+        fi
+
+        # Copy binaries
+        cp ../mdok-linux-amd64 .
+        cp ../mdok-linux-arm64 .
+        cp ../VERSION.txt .
+
+        # Create README for release branch
+        cat > README.md << 'EOF'
+# mdok Binaries
+
+Pre-built binaries for mdok - Docker container monitoring tool.
+
+## Quick Install
+
+### Linux AMD64 (x86_64)
+```bash
+curl -L https://raw.githubusercontent.com/${{ github.repository }}/release/mdok-linux-amd64 -o mdok
+chmod +x mdok
+sudo mv mdok /usr/local/bin/
+```
+
+### Linux ARM64 (aarch64)
+```bash
+curl -L https://raw.githubusercontent.com/${{ github.repository }}/release/mdok-linux-arm64 -o mdok
+chmod +x mdok
+sudo mv mdok /usr/local/bin/
+```
+
+## Files
+
+- `mdok-linux-amd64` - Linux x86_64 binary
+- `mdok-linux-arm64` - Linux ARM64 binary
+- `VERSION.txt` - Build information
+
+## Build Info
+
+EOF
+        cat VERSION.txt >> README.md
+
+        # Commit and push
+        git add mdok-linux-amd64 mdok-linux-arm64 VERSION.txt README.md
+        git commit -m "Release binaries from ${{ github.sha }}" || echo "No changes to commit"
+        git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
