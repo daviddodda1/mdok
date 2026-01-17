@@ -1,5 +1,5 @@
 - name: Push binaries to release branch
-      run: |
+  run: |
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
 
@@ -22,7 +22,7 @@
         cp ../VERSION.txt .
 
         # Create README for release branch
-        # Note: All lines below must be indented relative to "run"
+        # NOTE: All lines below must be indented relative to the 'run' key
         cat > README.md << EOF
         # mdok Binaries
 
@@ -52,8 +52,9 @@
 
         ## Build Info
         EOF
-        
-        # Cleanup indentation in the generated README so it doesn't render as code blocks
+
+        # This sed command removes the leading spaces from the README content 
+        # so that it doesn't look like code blocks in the final markdown file.
         sed -i 's/^        //' README.md
 
         cat VERSION.txt >> README.md
@@ -62,5 +63,5 @@
         git add mdok-linux-amd64 mdok-linux-arm64 VERSION.txt README.md
         git commit -m "Release binaries from ${{ github.sha }}" || echo "No changes to commit"
         git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} release
-      env:
+  env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
