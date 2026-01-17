@@ -77,6 +77,29 @@ func CalculateSummary(samples []Sample) *ContainerSummary {
 		summary.BlockWriteTotal = lastSample.BlockWrite
 	}
 
+	// Calculate network breakdown percentages
+	var totalInterContainer, totalInternal, totalInternet int
+	var samplesWithConnections int
+
+	for _, s := range samples {
+		totalConns := s.NetConnInterContainer + s.NetConnInternal + s.NetConnInternet
+		if totalConns > 0 {
+			totalInterContainer += s.NetConnInterContainer
+			totalInternal += s.NetConnInternal
+			totalInternet += s.NetConnInternet
+			samplesWithConnections++
+		}
+	}
+
+	if samplesWithConnections > 0 && (totalInterContainer+totalInternal+totalInternet) > 0 {
+		totalConns := float64(totalInterContainer + totalInternal + totalInternet)
+		summary.NetworkBreakdown = &NetworkBreakdown{
+			InterContainerPct: float64(totalInterContainer) / totalConns * 100,
+			InternalPct:       float64(totalInternal) / totalConns * 100,
+			InternetPct:       float64(totalInternet) / totalConns * 100,
+		}
+	}
+
 	return summary
 }
 
