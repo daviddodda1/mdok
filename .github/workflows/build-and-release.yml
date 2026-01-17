@@ -7,6 +7,10 @@ on:
     tags:
       - 'v*'
 
+# Add this block to grant the necessary push permissions
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,7 +24,6 @@ jobs:
       with:
         go-version: '1.21'
 
-    # New step to resolve and download dependencies
     - name: Download dependencies
       run: go mod tidy
 
@@ -49,12 +52,10 @@ jobs:
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
 
-        # Clone the repo to a temp directory
         git clone --branch release https://github.com/${{ github.repository }} release-branch 2>/dev/null || git clone https://github.com/${{ github.repository }} release-branch
 
         cd release-branch
 
-        # Create orphan release branch if it doesn't exist
         if ! git show-ref --verify --quiet refs/heads/release; then
           git checkout --orphan release
           git rm -rf . 2>/dev/null || true
@@ -62,12 +63,10 @@ jobs:
           git checkout release
         fi
 
-        # Copy binaries
         cp ../mdok-linux-amd64 .
         cp ../mdok-linux-arm64 .
         cp ../VERSION.txt .
 
-        # Create README for release branch
         cat > README.md << EOF
         # mdok Binaries
 
@@ -98,12 +97,10 @@ jobs:
         ## Build Info
         EOF
 
-        # Strip the leading 8 spaces used for YAML indentation from the README
         sed -i 's/^        //' README.md
         
         cat VERSION.txt >> README.md
 
-        # Commit and push
         git add mdok-linux-amd64 mdok-linux-arm64 VERSION.txt README.md
         git commit -m "Release binaries from ${{ github.sha }}" || echo "No changes to commit"
         git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} release
