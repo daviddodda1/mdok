@@ -47,12 +47,35 @@ func CalculateSummary(samples []Sample) *ContainerSummary {
 	summary.BlockWrite = calculateStats(blockWriteRateValues)
 	summary.PidsCount = calculateStats(pidsValues)
 
-	// Get totals from last sample (cumulative values)
+	// Get totals for monitoring period (delta between first and last sample)
+	// Docker stats are cumulative since container start, so we need the difference
+	firstSample := samples[0]
 	lastSample := samples[len(samples)-1]
-	summary.NetRxTotal = lastSample.NetRxBytes
-	summary.NetTxTotal = lastSample.NetTxBytes
-	summary.BlockReadTotal = lastSample.BlockRead
-	summary.BlockWriteTotal = lastSample.BlockWrite
+
+	// Handle counter resets (container restart) - if counters went backwards, use last sample value
+	if lastSample.NetRxBytes >= firstSample.NetRxBytes {
+		summary.NetRxTotal = lastSample.NetRxBytes - firstSample.NetRxBytes
+	} else {
+		summary.NetRxTotal = lastSample.NetRxBytes // Counter reset, use current value
+	}
+
+	if lastSample.NetTxBytes >= firstSample.NetTxBytes {
+		summary.NetTxTotal = lastSample.NetTxBytes - firstSample.NetTxBytes
+	} else {
+		summary.NetTxTotal = lastSample.NetTxBytes
+	}
+
+	if lastSample.BlockRead >= firstSample.BlockRead {
+		summary.BlockReadTotal = lastSample.BlockRead - firstSample.BlockRead
+	} else {
+		summary.BlockReadTotal = lastSample.BlockRead
+	}
+
+	if lastSample.BlockWrite >= firstSample.BlockWrite {
+		summary.BlockWriteTotal = lastSample.BlockWrite - firstSample.BlockWrite
+	} else {
+		summary.BlockWriteTotal = lastSample.BlockWrite
+	}
 
 	return summary
 }
