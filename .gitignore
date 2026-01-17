@@ -1,0 +1,34 @@
+# Binaries
+mdok
+mdok-*
+*.exe
+
+# Go build artifacts
+*.o
+*.a
+*.so
+
+# Test binaries
+*.test
+*.out
+
+# Go module cache
+go.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local testing
+test-data/
+.mdok/
+
+# Logs
+*.log
