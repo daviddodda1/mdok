@@ -25,6 +25,6 @@ sudo mv mdok /usr/local/bin/
 - `VERSION.txt` - Build information
 
 ## Build Info
-Built from commit: 9b030e973277e52bbf3952a0d597840278ee0a8e
-Date: 2026-01-17 04:57:50 UTC
+Built from commit: 2aae4c57239e4fe02c5e957ad796804ef820b6f4
+Date: 2026-01-17 05:21:11 UTC
 Branch: main
