@@ -219,8 +219,11 @@ func runStart(configName string, foreground bool) {
 
 	// Check if already running
 	if IsRunning(configName) {
-		fmt.Fprintf(os.Stderr, "Monitoring for '%s' is already running.\n", configName)
-		os.Exit(1)
+		existingPid, _ := ReadPidFile(configName)
+		if existingPid != os.Getpid() {
+		  fmt.Fprintf(os.Stderr, "Monitoring for '%s' is already running.\n", configName)
+		  os.Exit(1)
+	        }
 	}
 
 	if foreground {
