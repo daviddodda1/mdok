@@ -64,7 +64,7 @@ jobs:
         cp ../VERSION.txt .
 
         # Create README for release branch
-        cat > README.md << 'EOF'
+        cat > README.md << EOF
 # mdok Binaries
 
 Pre-built binaries for mdok - Docker container monitoring tool.
@@ -72,24 +72,24 @@ Pre-built binaries for mdok - Docker container monitoring tool.
 ## Quick Install
 
 ### Linux AMD64 (x86_64)
-```bash
+\`\`\`bash
 curl -L https://raw.githubusercontent.com/${{ github.repository }}/release/mdok-linux-amd64 -o mdok
 chmod +x mdok
 sudo mv mdok /usr/local/bin/
-```
+\`\`\`
 
 ### Linux ARM64 (aarch64)
-```bash
+\`\`\`bash
 curl -L https://raw.githubusercontent.com/${{ github.repository }}/release/mdok-linux-arm64 -o mdok
 chmod +x mdok
 sudo mv mdok /usr/local/bin/
-```
+\`\`\`
 
 ## Files
 
-- `mdok-linux-amd64` - Linux x86_64 binary
-- `mdok-linux-arm64` - Linux ARM64 binary
-- `VERSION.txt` - Build information
+- \`mdok-linux-amd64\` - Linux x86_64 binary
+- \`mdok-linux-arm64\` - Linux ARM64 binary
+- \`VERSION.txt\` - Build information
 
 ## Build Info
 
