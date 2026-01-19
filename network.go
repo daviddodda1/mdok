@@ -50,7 +50,7 @@ var proxyImagePatterns = []string{
 	"litellm", // LLM API proxy (OpenAI, Anthropic, etc.)
 }
 
-func isProxyContainer(c container.Summary) bool {
+func isProxyContainer(c types.Container) bool {
 	// Explicit label takes precedence (can also be used to exclude with "false")
 	if val, ok := c.Labels[proxyLabelKey]; ok {
 		// Return false for explicit "false"/"no"/"0" to allow excluding containers
