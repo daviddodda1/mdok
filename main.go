@@ -76,10 +76,12 @@ Run without arguments to interactively create a new monitoring configuration.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			history, _ := cmd.Flags().GetBool("history")
-			runView(args[0], history)
+			sessionID, _ := cmd.Flags().GetString("session")
+			runView(args[0], history, sessionID)
 		},
 	}
 	viewCmd.Flags().Bool("history", false, "View historical data instead of live dashboard")
+	viewCmd.Flags().String("session", "", "View specific session ID (use with --history)")
 
 	// export command
 	exportCmd := &cobra.Command{
@@ -148,7 +150,17 @@ Run without arguments to interactively create a new monitoring configuration.`,
 	logsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
 	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
 
-	rootCmd.AddCommand(startCmd, stopCmd, lsCmd, viewCmd, exportCmd, configsCmd, editCmd, deleteCmd, logsCmd)
+	// sessions command
+	sessionsCmd := &cobra.Command{
+		Use:   "sessions <config-name>",
+		Short: "List all monitoring sessions for a configuration",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			runSessions(args[0])
+		},
+	}
+
+	rootCmd.AddCommand(startCmd, stopCmd, lsCmd, viewCmd, exportCmd, configsCmd, editCmd, deleteCmd, logsCmd, sessionsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -258,8 +270,8 @@ func runStop(configName string) {
 
 	fmt.Printf("Stopped monitoring '%s'.\n", configName)
 
-	// Display summary
-	displaySummary(configName)
+	// Display summary (current session only)
+	displaySummary(configName, "")
 }
 
 func runList() {
@@ -290,7 +302,52 @@ func runList() {
 	}
 }
 
-func runView(configName string, history bool) {
+func runSessions(configName string) {
+	sessions, err := GetAllSessions(configName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("No monitoring sessions found.")
+		return
+	}
+
+	fmt.Printf("%-15s %-25s %-25s %-10s %s\n", "SESSION ID", "STARTED", "ENDED", "SAMPLES", "CONTAINERS")
+	fmt.Println(strings.Repeat("-", 100))
+
+	for _, s := range sessions {
+		duration := s.EndTime.Sub(s.StartTime)
+		endedStr := s.EndTime.Format("2006-01-02 15:04:05")
+		if s.EndTime.IsZero() {
+			endedStr = "ongoing"
+		}
+
+		containers := strings.Join(s.Containers, ", ")
+		if len(containers) > 30 {
+			containers = containers[:27] + "..."
+		}
+
+		fmt.Printf("%-15s %-25s %-25s %-10d %s\n",
+			s.SessionID,
+			s.StartTime.Format("2006-01-02 15:04:05"),
+			endedStr,
+			s.SampleCount,
+			containers,
+		)
+
+		// Show duration as a subtitle
+		if !s.EndTime.IsZero() {
+			fmt.Printf("                %-25s\n", dimStyle.Render(fmt.Sprintf("Duration: %s", formatDuration(duration))))
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Use 'mdok view <config> --history --session <session-id>' to view a specific session")
+}
+
+func runView(configName string, history bool, sessionID string) {
 	config, err := LoadConfig(configName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
@@ -301,7 +358,7 @@ func runView(configName string, history bool) {
 	if history {
 		// Check if TTY for interactive mode
 		if isatty.IsTerminal(os.Stdout.Fd()) {
-			model := NewHistoryTUIModel(configName)
+			model := NewHistoryTUIModel(configName, sessionID)
 			p := tea.NewProgram(model, tea.WithAltScreen())
 			if _, err := p.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -309,7 +366,7 @@ func runView(configName string, history bool) {
 			}
 		} else {
 			// Non-TTY: fall back to static output
-			displaySummary(configName)
+			displaySummary(configName, sessionID)
 		}
 		return
 	}
@@ -324,12 +381,12 @@ func runView(configName string, history bool) {
 			os.Exit(1)
 		}
 	} else {
-		// Show static summary
-		displaySummary(configName)
+		// Show static summary (current session only)
+		displaySummary(configName, "")
 	}
 }
 
-func displaySummary(configName string) {
+func displaySummary(configName string, sessionID string) {
 	dataDir := GetDataDir(configName)
 	files, err := filepath.Glob(filepath.Join(dataDir, "*.json"))
 	if err != nil || len(files) == 0 {
@@ -337,8 +394,18 @@ func displaySummary(configName string) {
 		return
 	}
 
+	sessionInfo := ""
+	if sessionID != "" {
+		sessionInfo = fmt.Sprintf(" (Session: %s)", sessionID)
+	}
+
 	fmt.Printf("\n╭─────────────────────────────────────────────────────────────────────────╮\n")
-	fmt.Printf("│                   Historical Data for '%s'%-25s│\n", configName, strings.Repeat(" ", 28-len(configName)))
+	title := fmt.Sprintf("Historical Data for '%s'%s", configName, sessionInfo)
+	padding := 73 - len(title) // 73 = box width minus 2 for borders
+	if padding < 0 {
+		padding = 0
+	}
+	fmt.Printf("│ %-*s │\n", 73, title+strings.Repeat(" ", padding))
 	fmt.Printf("╰─────────────────────────────────────────────────────────────────────────╯\n\n")
 
 	for i, file := range files {
@@ -350,6 +417,13 @@ func displaySummary(configName string) {
 		data, err := LoadContainerData(file)
 		if err != nil {
 			continue
+		}
+
+		// Filter based on sessionID or show most recent session
+		if sessionID != "" {
+			data = filterToSession(data, sessionID)
+		} else {
+			data = filterToCurrentSession(data)
 		}
 
 		// Calculate summary if not present

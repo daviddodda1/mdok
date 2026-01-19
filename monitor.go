@@ -17,6 +17,7 @@ type Monitor struct {
 	docker        *DockerClient
 	containerData map[string]*ContainerData
 	prevStats     map[string]*StatsResult
+	sessionID     string
 	mu            sync.Mutex
 	stopChan      chan struct{}
 	logger        *log.Logger
@@ -29,11 +30,15 @@ func NewMonitor(config Config, logger *log.Logger) (*Monitor, error) {
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
+	// Generate unique session ID (timestamp-based)
+	sessionID := fmt.Sprintf("%d", time.Now().Unix())
+
 	return &Monitor{
 		config:        config,
 		docker:        docker,
 		containerData: make(map[string]*ContainerData),
 		prevStats:     make(map[string]*StatsResult),
+		sessionID:     sessionID,
 		stopChan:      make(chan struct{}),
 		logger:        logger,
 	}, nil
@@ -127,6 +132,7 @@ func (m *Monitor) initializeContainers(ctx context.Context) error {
 			ImageName:     imageName,
 			Host:          hostInfo,
 			Limits:        limits,
+			SessionID:     m.sessionID,
 			StartTime:     time.Now(),
 			Interval:      m.config.Interval,
 			Samples:       make([]Sample, 0),
