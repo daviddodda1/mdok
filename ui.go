@@ -48,6 +48,7 @@ var (
 // SelectionModel is the TUI model for container selection
 type SelectionModel struct {
 	containers         []ContainerInfo
+	filteredContainers []ContainerInfo   // Containers after search filter
 	cursor             int
 	selected           map[int]bool
 	selectedContainers []string
@@ -56,8 +57,12 @@ type SelectionModel struct {
 	phase              int // 0=selection, 1=interval, 2=name
 	intervalInput      textinput.Model
 	nameInput          textinput.Model
+	searchInput        textinput.Model
+	searchActive       bool
 	cancelled          bool
 	err                error
+	windowSize         int // Number of containers visible at once
+	windowOffset       int // First visible container index
 }
 
 // NewSelectionModel creates a new selection model
@@ -72,12 +77,22 @@ func NewSelectionModel(containers []ContainerInfo) SelectionModel {
 	nameInput.CharLimit = 50
 	nameInput.Width = 30
 
+	searchInput := textinput.New()
+	searchInput.Placeholder = "Search containers..."
+	searchInput.CharLimit = 100
+	searchInput.Width = 50
+
 	return SelectionModel{
-		containers:    containers,
-		selected:      make(map[int]bool),
-		intervalInput: intervalInput,
-		nameInput:     nameInput,
-		interval:      5,
+		containers:         containers,
+		filteredContainers: containers, // Initially show all
+		selected:           make(map[int]bool),
+		intervalInput:      intervalInput,
+		nameInput:          nameInput,
+		searchInput:        searchInput,
+		searchActive:       false,
+		interval:           5,
+		windowSize:         10, // Show 10 containers at a time (each takes 2 lines)
+		windowOffset:       0,
 	}
 }
 
@@ -105,42 +120,177 @@ func (m SelectionModel) Init() tea.Cmd {
 	return nil
 }
 
+// filterContainers filters containers based on search query
+func (m *SelectionModel) filterContainers() {
+	query := strings.ToLower(m.searchInput.Value())
+	if query == "" {
+		m.filteredContainers = m.containers
+		return
+	}
+
+	filtered := make([]ContainerInfo, 0)
+	for _, c := range m.containers {
+		name := strings.ToLower(c.Name)
+		id := strings.ToLower(c.ID)
+		image := strings.ToLower(c.Image)
+
+		if strings.Contains(name, query) || strings.Contains(id, query) || strings.Contains(image, query) {
+			filtered = append(filtered, c)
+		}
+	}
+	m.filteredContainers = filtered
+
+	// Reset cursor and window if needed
+	if m.cursor >= len(m.filteredContainers) {
+		m.cursor = 0
+		m.windowOffset = 0
+	}
+}
+
+// getActualContainerIndex maps filtered index to original container index
+func (m *SelectionModel) getActualContainerIndex(filteredIndex int) int {
+	if filteredIndex < 0 || filteredIndex >= len(m.filteredContainers) {
+		return -1
+	}
+
+	filteredContainer := m.filteredContainers[filteredIndex]
+	for i, c := range m.containers {
+		if c.ID == filteredContainer.ID {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m SelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle search mode input first
+		if m.searchActive && m.phase == 0 {
+			switch msg.String() {
+			case "esc":
+				// Exit search mode
+				m.searchActive = false
+				m.searchInput.Blur()
+				m.searchInput.SetValue("")
+				m.filterContainers()
+				return m, nil
+			case "enter":
+				// Exit search mode and keep filter
+				m.searchActive = false
+				return m, nil
+			default:
+				// Update search input
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				m.filterContainers()
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.phase == 0 {
+			if m.phase == 0 && !m.searchActive {
 				m.cancelled = true
 				return m, tea.Quit
+			}
+		case "/":
+			if m.phase == 0 && !m.searchActive {
+				// Activate search mode
+				m.searchActive = true
+				m.searchInput.Focus()
+				return m, textinput.Blink
 			}
 		case "esc":
 			if m.phase > 0 {
 				m.phase--
 				return m, nil
 			}
+			if m.searchActive {
+				// Exit search mode
+				m.searchActive = false
+				m.searchInput.SetValue("")
+				m.filterContainers()
+				return m, nil
+			}
 			m.cancelled = true
 			return m, tea.Quit
 		case "up", "k":
-			if m.phase == 0 && m.cursor > 0 {
+			if m.phase == 0 && !m.searchActive && m.cursor > 0 {
 				m.cursor--
+				// Adjust window if cursor moved above visible area
+				if m.cursor < m.windowOffset {
+					m.windowOffset = m.cursor
+				}
 			}
 		case "down", "j":
-			if m.phase == 0 && m.cursor < len(m.containers)-1 {
+			if m.phase == 0 && !m.searchActive && m.cursor < len(m.filteredContainers)-1 {
 				m.cursor++
+				// Adjust window if cursor moved below visible area
+				if m.cursor >= m.windowOffset+m.windowSize {
+					m.windowOffset = m.cursor - m.windowSize + 1
+				}
+			}
+		case "pgup":
+			if m.phase == 0 && !m.searchActive && m.cursor > 0 {
+				// Jump up by window size
+				m.cursor -= m.windowSize
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+				m.windowOffset = m.cursor
+			}
+		case "pgdown":
+			if m.phase == 0 && !m.searchActive && m.cursor < len(m.filteredContainers)-1 {
+				// Jump down by window size
+				m.cursor += m.windowSize
+				if m.cursor >= len(m.filteredContainers) {
+					m.cursor = len(m.filteredContainers) - 1
+				}
+				// Adjust window
+				if m.cursor >= m.windowOffset+m.windowSize {
+					m.windowOffset = m.cursor - m.windowSize + 1
+				}
+			}
+		case "home":
+			if m.phase == 0 && !m.searchActive {
+				m.cursor = 0
+				m.windowOffset = 0
+			}
+		case "end":
+			if m.phase == 0 && !m.searchActive {
+				m.cursor = len(m.filteredContainers) - 1
+				m.windowOffset = m.cursor - m.windowSize + 1
+				if m.windowOffset < 0 {
+					m.windowOffset = 0
+				}
 			}
 		case " ":
-			if m.phase == 0 {
-				m.selected[m.cursor] = !m.selected[m.cursor]
+			if m.phase == 0 && !m.searchActive && m.cursor < len(m.filteredContainers) {
+				// Find the actual container index in the original list
+				actualIndex := m.getActualContainerIndex(m.cursor)
+				if actualIndex >= 0 {
+					m.selected[actualIndex] = !m.selected[actualIndex]
+				}
 			}
 		case "a":
-			if m.phase == 0 {
-				// Select all
-				allSelected := len(m.selected) == len(m.containers)
-				m.selected = make(map[int]bool)
-				if !allSelected {
-					for i := range m.containers {
-						m.selected[i] = true
+			if m.phase == 0 && !m.searchActive {
+				// Select all (in current filter)
+				allFilteredSelected := true
+				for i := range m.filteredContainers {
+					actualIndex := m.getActualContainerIndex(i)
+					if actualIndex >= 0 && !m.selected[actualIndex] {
+						allFilteredSelected = false
+						break
+					}
+				}
+
+				// Toggle selection for all filtered containers
+				for i := range m.filteredContainers {
+					actualIndex := m.getActualContainerIndex(i)
+					if actualIndex >= 0 {
+						m.selected[actualIndex] = !allFilteredSelected
 					}
 				}
 			}
@@ -201,7 +351,6 @@ func (m SelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs
-	var cmd tea.Cmd
 	switch m.phase {
 	case 1:
 		m.intervalInput, cmd = m.intervalInput.Update(msg)
@@ -227,16 +376,46 @@ func (m SelectionModel) View() string {
 	switch m.phase {
 	case 0:
 		s.WriteString(titleStyle.Render("Select containers to monitor"))
+		s.WriteString("\n")
+
+		// Show search input
+		if m.searchActive {
+			s.WriteString("\n")
+			s.WriteString("Search: ")
+			s.WriteString(m.searchInput.View())
+			s.WriteString(" ")
+			s.WriteString(dimStyle.Render("(ESC to clear)"))
+		} else if m.searchInput.Value() != "" {
+			s.WriteString("\n")
+			s.WriteString(dimStyle.Render(fmt.Sprintf("Filter: %s (/ to search, ESC to clear)", m.searchInput.Value())))
+		}
+
+		// Show scroll indicator if there are more items above
+		if m.windowOffset > 0 {
+			s.WriteString("\n")
+			s.WriteString(dimStyle.Render(fmt.Sprintf("    ▲ %d more above...", m.windowOffset)))
+		}
 		s.WriteString("\n\n")
 
-		for i, c := range m.containers {
+		// Calculate visible range
+		start := m.windowOffset
+		end := m.windowOffset + m.windowSize
+		if end > len(m.filteredContainers) {
+			end = len(m.filteredContainers)
+		}
+
+		// Render only visible containers
+		for i := start; i < end; i++ {
+			c := m.filteredContainers[i]
+			actualIndex := m.getActualContainerIndex(i)
+
 			cursor := "  "
 			if m.cursor == i {
 				cursor = cursorStyle.Render("> ")
 			}
 
 			checked := "[ ]"
-			if m.selected[i] {
+			if actualIndex >= 0 && m.selected[actualIndex] {
 				checked = selectedStyle.Render("[x]")
 			}
 
@@ -261,8 +440,27 @@ func (m SelectionModel) View() string {
 			s.WriteString("\n")
 		}
 
+		// Show scroll indicator if there are more items below
+		if end < len(m.filteredContainers) {
+			s.WriteString(dimStyle.Render(fmt.Sprintf("    ▼ %d more below...", len(m.filteredContainers)-end)))
+		}
+
+		// Show no results message if filter is active but no matches
+		if len(m.filteredContainers) == 0 && m.searchInput.Value() != "" {
+			s.WriteString("\n")
+			s.WriteString(warningStyle.Render("No containers match your search."))
+		}
+
 		s.WriteString("\n")
-		s.WriteString(helpStyle.Render("space: toggle | a: select all | enter: continue | q: quit"))
+		selectedCount := len(m.selected)
+		totalCount := len(m.containers)
+		filteredCount := len(m.filteredContainers)
+
+		if filteredCount != totalCount {
+			s.WriteString(helpStyle.Render(fmt.Sprintf("Selected: %d | Showing: %d/%d | /: search | space: toggle | a: all | enter: continue | q: quit", selectedCount, filteredCount, totalCount)))
+		} else {
+			s.WriteString(helpStyle.Render(fmt.Sprintf("Selected: %d/%d | /: search | ↑↓: navigate | space: toggle | a: all | enter: continue | q: quit", selectedCount, totalCount)))
+		}
 
 	case 1:
 		s.WriteString(titleStyle.Render("Set monitoring interval"))
