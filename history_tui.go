@@ -39,6 +39,11 @@ type HistoryTUIModel struct {
 // Message types for the TUI
 type historyTickMsg time.Time
 type fileUpdateMsg struct {
+	updates      []fileUpdate
+	newModTimes  map[string]time.Time
+}
+
+type fileUpdate struct {
 	index int
 	data  *ContainerData
 }
@@ -166,6 +171,13 @@ func (m HistoryTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case tea.MouseMsg:
+		// Forward mouse events (including scroll wheel) to viewport
+		if m.viewportReady {
+			m.viewport, cmd = m.viewport.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -191,8 +203,17 @@ func (m HistoryTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.tick(), m.checkFileChanges(), m.checkDaemonStatus())
 
 	case fileUpdateMsg:
-		if msg.index >= 0 && msg.index < len(m.containerData) {
-			m.containerData[msg.index] = msg.data
+		// Process all file updates
+		for _, update := range msg.updates {
+			if update.index >= 0 && update.index < len(m.containerData) {
+				m.containerData[update.index] = update.data
+			}
+		}
+		// Update modification times to prevent re-detecting same changes
+		for filepath, modTime := range msg.newModTimes {
+			m.fileModTimes[filepath] = modTime
+		}
+		if len(msg.updates) > 0 {
 			m.needsRender = true
 		}
 
@@ -267,26 +288,48 @@ func (m HistoryTUIModel) tick() tea.Cmd {
 
 // checkFileChanges checks if any data files have been modified
 func (m HistoryTUIModel) checkFileChanges() tea.Cmd {
+	// Capture current mod times to compare against
+	currentModTimes := make(map[string]time.Time)
+	for k, v := range m.fileModTimes {
+		currentModTimes[k] = v
+	}
+	files := m.containerFiles
+	sessionID := m.sessionID
+
 	return func() tea.Msg {
-		for i, filepath := range m.containerFiles {
+		var updates []fileUpdate
+		newModTimes := make(map[string]time.Time)
+
+		for i, filepath := range files {
 			stat, err := os.Stat(filepath)
 			if err != nil {
 				continue
 			}
 
 			modTime := stat.ModTime()
-			if modTime.After(m.fileModTimes[filepath]) {
+			if modTime.After(currentModTimes[filepath]) {
 				// File changed, reload
 				data, err := LoadContainerData(filepath)
 				if err != nil {
 					continue
 				}
 
-				m.fileModTimes[filepath] = modTime
-				return fileUpdateMsg{index: i, data: data}
+				// Filter to session
+				if sessionID != "" {
+					data = filterToSession(data, sessionID)
+				} else {
+					data = filterToCurrentSession(data)
+				}
+
+				updates = append(updates, fileUpdate{index: i, data: data})
+				newModTimes[filepath] = modTime
 			}
 		}
-		return nil
+
+		if len(updates) == 0 {
+			return nil
+		}
+		return fileUpdateMsg{updates: updates, newModTimes: newModTimes}
 	}
 }
 
