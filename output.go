@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Directory structure:
@@ -339,4 +340,273 @@ func CreateLogWriter(configName string) (io.WriteCloser, error) {
 
 	logFile := GetLogFile(configName)
 	return os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+}
+
+// filterToCurrentSession filters container data to only include the most recent monitoring session
+func filterToCurrentSession(data *ContainerData) *ContainerData {
+	if data == nil || len(data.Samples) == 0 {
+		return data
+	}
+
+	// Find the most recent session by looking for gaps in timestamps
+	// A gap > 2x the interval indicates monitoring was stopped and restarted
+	maxGap := time.Duration(data.Interval*2+5) * time.Second
+
+	sessionStartIdx := 0
+	for i := len(data.Samples) - 1; i > 0; i-- {
+		gap := data.Samples[i].Timestamp.Sub(data.Samples[i-1].Timestamp)
+		if gap > maxGap {
+			// Found a gap, so the current session starts at index i
+			sessionStartIdx = i
+			break
+		}
+	}
+
+	// If we found a session boundary, filter the samples
+	if sessionStartIdx > 0 {
+		filtered := &ContainerData{
+			ContainerID:   data.ContainerID,
+			ContainerName: data.ContainerName,
+			ImageName:     data.ImageName,
+			Host:          data.Host,
+			Limits:        data.Limits,
+			StartTime:     data.Samples[sessionStartIdx].Timestamp,
+			EndTime:       data.EndTime,
+			Interval:      data.Interval,
+			Samples:       data.Samples[sessionStartIdx:],
+		}
+
+		// Recalculate summary for the current session only
+		filtered.Summary = CalculateSummary(filtered.Samples)
+		if filtered.Summary != nil {
+			filtered.Summary.Warnings = DetectWarnings(filtered)
+			if filtered.EndTime.IsZero() {
+				filtered.EndTime = time.Now()
+			}
+			if !filtered.StartTime.IsZero() && !filtered.EndTime.IsZero() {
+				filtered.Summary.Duration = filtered.EndTime.Sub(filtered.StartTime).Round(time.Second).String()
+			}
+		}
+
+		// Recalculate network cost for current session
+		if filtered.Summary != nil {
+			filtered.NetworkCost = CalculateNetworkCost(filtered.Summary.NetTxTotal)
+		}
+
+		return filtered
+	}
+
+	return data
+}
+
+// GetAllSessions returns all unique sessions from a configuration's data
+func GetAllSessions(configName string) ([]SessionInfo, error) {
+	dataDir := GetDataDir(configName)
+	files, err := filepath.Glob(filepath.Join(dataDir, "*.json"))
+	if err != nil || len(files) == 0 {
+		return nil, fmt.Errorf("no monitoring data found")
+	}
+
+	// Map to track unique sessions
+	sessionsMap := make(map[string]*SessionInfo)
+
+	for _, file := range files {
+		data, err := LoadContainerData(file)
+		if err != nil {
+			continue
+		}
+
+		if len(data.Samples) == 0 {
+			continue
+		}
+
+		// Group samples by session ID
+		// If no session ID, use start time gaps to identify sessions
+		if data.SessionID != "" {
+			// Use explicit session ID
+			if session, exists := sessionsMap[data.SessionID]; exists {
+				// Update session info
+				session.Containers = appendUnique(session.Containers, data.ContainerName)
+				if data.StartTime.Before(session.StartTime) {
+					session.StartTime = data.StartTime
+				}
+				if data.EndTime.After(session.EndTime) {
+					session.EndTime = data.EndTime
+				}
+				session.SampleCount += len(data.Samples)
+			} else {
+				// New session
+				sessionsMap[data.SessionID] = &SessionInfo{
+					SessionID:   data.SessionID,
+					ConfigName:  configName,
+					StartTime:   data.StartTime,
+					EndTime:     data.EndTime,
+					SampleCount: len(data.Samples),
+					Containers:  []string{data.ContainerName},
+				}
+			}
+		} else {
+			// Legacy data without session IDs - create sessions based on time gaps
+			sessions := splitIntoSessions(data)
+			for _, sess := range sessions {
+				sessionID := fmt.Sprintf("%d", sess.StartTime.Unix())
+				if existing, exists := sessionsMap[sessionID]; exists {
+					existing.Containers = appendUnique(existing.Containers, data.ContainerName)
+					existing.SampleCount += sess.SampleCount
+				} else {
+					sessionsMap[sessionID] = &SessionInfo{
+						SessionID:   sessionID,
+						ConfigName:  configName,
+						StartTime:   sess.StartTime,
+						EndTime:     sess.EndTime,
+						SampleCount: sess.SampleCount,
+						Containers:  []string{data.ContainerName},
+					}
+				}
+			}
+		}
+	}
+
+	// Convert map to slice and sort by start time (newest first)
+	sessions := make([]SessionInfo, 0, len(sessionsMap))
+	for _, session := range sessionsMap {
+		sessions = append(sessions, *session)
+	}
+
+	// Sort by start time descending (newest first)
+	for i := 0; i < len(sessions)-1; i++ {
+		for j := i + 1; j < len(sessions); j++ {
+			if sessions[i].StartTime.Before(sessions[j].StartTime) {
+				sessions[i], sessions[j] = sessions[j], sessions[i]
+			}
+		}
+	}
+
+	return sessions, nil
+}
+
+// splitIntoSessions splits container data into sessions based on time gaps
+func splitIntoSessions(data *ContainerData) []SessionInfo {
+	if len(data.Samples) == 0 {
+		return nil
+	}
+
+	maxGap := time.Duration(data.Interval*2+5) * time.Second
+	var sessions []SessionInfo
+	sessionStart := 0
+
+	for i := 1; i < len(data.Samples); i++ {
+		gap := data.Samples[i].Timestamp.Sub(data.Samples[i-1].Timestamp)
+		if gap > maxGap {
+			// Found a gap - save previous session
+			sessions = append(sessions, SessionInfo{
+				SessionID:   fmt.Sprintf("%d", data.Samples[sessionStart].Timestamp.Unix()),
+				ConfigName:  "",
+				StartTime:   data.Samples[sessionStart].Timestamp,
+				EndTime:     data.Samples[i-1].Timestamp,
+				SampleCount: i - sessionStart,
+			})
+			sessionStart = i
+		}
+	}
+
+	// Add final session
+	sessions = append(sessions, SessionInfo{
+		SessionID:   fmt.Sprintf("%d", data.Samples[sessionStart].Timestamp.Unix()),
+		ConfigName:  "",
+		StartTime:   data.Samples[sessionStart].Timestamp,
+		EndTime:     data.Samples[len(data.Samples)-1].Timestamp,
+		SampleCount: len(data.Samples) - sessionStart,
+	})
+
+	return sessions
+}
+
+// appendUnique appends a string to a slice if it's not already present
+func appendUnique(slice []string, item string) []string {
+	for _, existing := range slice {
+		if existing == item {
+			return slice
+		}
+	}
+	return append(slice, item)
+}
+
+// filterToSession filters container data to only include samples from a specific session
+func filterToSession(data *ContainerData, sessionID string) *ContainerData {
+	if data == nil || len(data.Samples) == 0 {
+		return data
+	}
+
+	// If data has session ID, simple comparison
+	if data.SessionID != "" {
+		if data.SessionID == sessionID {
+			return data
+		}
+		// No match, return empty
+		return &ContainerData{
+			ContainerID:   data.ContainerID,
+			ContainerName: data.ContainerName,
+			ImageName:     data.ImageName,
+			Host:          data.Host,
+			Limits:        data.Limits,
+			SessionID:     data.SessionID,
+			Interval:      data.Interval,
+			Samples:       []Sample{},
+		}
+	}
+
+	// Legacy data - filter by timestamp
+	sessions := splitIntoSessions(data)
+	for _, sess := range sessions {
+		if sess.SessionID == sessionID {
+			// Find sample indices for this session
+			var filtered []Sample
+			for _, sample := range data.Samples {
+				if !sample.Timestamp.Before(sess.StartTime) && !sample.Timestamp.After(sess.EndTime) {
+					filtered = append(filtered, sample)
+				}
+			}
+
+			result := &ContainerData{
+				ContainerID:   data.ContainerID,
+				ContainerName: data.ContainerName,
+				ImageName:     data.ImageName,
+				Host:          data.Host,
+				Limits:        data.Limits,
+				SessionID:     sessionID,
+				StartTime:     sess.StartTime,
+				EndTime:       sess.EndTime,
+				Interval:      data.Interval,
+				Samples:       filtered,
+			}
+
+			// Recalculate summary for the session
+			if len(result.Samples) > 0 {
+				result.Summary = CalculateSummary(result.Samples)
+				if result.Summary != nil {
+					result.Summary.Warnings = DetectWarnings(result)
+					result.Summary.Duration = result.EndTime.Sub(result.StartTime).Round(time.Second).String()
+				}
+
+				// Recalculate network cost
+				if result.Summary != nil {
+					result.NetworkCost = CalculateNetworkCost(result.Summary.NetTxTotal)
+				}
+			}
+
+			return result
+		}
+	}
+
+	// Session not found
+	return &ContainerData{
+		ContainerID:   data.ContainerID,
+		ContainerName: data.ContainerName,
+		ImageName:     data.ImageName,
+		Host:          data.Host,
+		Limits:        data.Limits,
+		Interval:      data.Interval,
+		Samples:       []Sample{},
+	}
 }

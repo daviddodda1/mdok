@@ -119,6 +119,7 @@ type ContainerData struct {
 	ImageName     string              `json:"image_name"`
 	Host          HostInfo            `json:"host"`
 	Limits        ContainerLimits     `json:"limits"`
+	SessionID     string              `json:"session_id,omitempty"`     // Unique ID for each monitoring session
 	StartTime     time.Time           `json:"start_time"`
 	EndTime       time.Time           `json:"end_time,omitempty"`
 	Interval      int                 `json:"interval_seconds"`
@@ -128,10 +129,21 @@ type ContainerData struct {
 	Recommendation *InstanceRecommendation `json:"recommendation,omitempty"`
 }
 
+// SessionInfo contains metadata about a monitoring session
+type SessionInfo struct {
+	SessionID  string    `json:"session_id"`
+	ConfigName string    `json:"config_name"`
+	StartTime  time.Time `json:"start_time"`
+	EndTime    time.Time `json:"end_time,omitempty"`
+	SampleCount int      `json:"sample_count"`
+	Containers []string  `json:"containers"`
+}
+
 // MonitoringSession represents an active monitoring session
 type MonitoringSession struct {
 	ConfigName string
 	Config     Config
+	SessionID  string
 	StartTime  time.Time
 	PID        int
 	DataDir    string

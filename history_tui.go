@@ -15,6 +15,7 @@ import (
 // HistoryTUIModel contains the state for the interactive history viewer
 type HistoryTUIModel struct {
 	configName     string
+	sessionID      string             // Optional: filter to specific session
 	containerFiles []string           // Paths to JSON files
 	currentIndex   int                // Currently focused container
 	containerData  []*ContainerData   // Loaded data
@@ -46,9 +47,10 @@ type daemonStatusMsg struct {
 }
 
 // NewHistoryTUIModel creates a new history TUI model
-func NewHistoryTUIModel(configName string) HistoryTUIModel {
+func NewHistoryTUIModel(configName string, sessionID string) HistoryTUIModel {
 	return HistoryTUIModel{
 		configName:   configName,
+		sessionID:    sessionID,
 		fileModTimes: make(map[string]time.Time),
 		needsRender:  true,
 	}
@@ -77,6 +79,13 @@ func (m HistoryTUIModel) loadInitialData() tea.Cmd {
 			data, err := LoadContainerData(file)
 			if err != nil {
 				continue
+			}
+
+			// Filter based on sessionID or show most recent session
+			if m.sessionID != "" {
+				data = filterToSession(data, m.sessionID)
+			} else {
+				data = filterToCurrentSession(data)
 			}
 			containerData[i] = data
 
