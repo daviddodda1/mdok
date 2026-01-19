@@ -49,10 +49,16 @@ type Sample struct {
 	BlockWriteRate  float64   `json:"block_write_rate"`  // bytes/sec
 	PidsCount       uint64    `json:"pids_count"`
 
-	// Network connection breakdown (approximate)
+	// Network connection breakdown (approximate, from socket counting)
 	NetConnInterContainer int `json:"net_conn_inter_container,omitempty"` // Connections to other containers
 	NetConnInternal       int `json:"net_conn_internal,omitempty"`        // Connections to internal/private IPs
 	NetConnInternet       int `json:"net_conn_internet,omitempty"`        // Connections to public IPs
+
+	// Network byte breakdown (from conntrack, more accurate when available)
+	NetBytesInterContainer uint64 `json:"net_bytes_inter_container,omitempty"` // Bytes to other containers
+	NetBytesInternal       uint64 `json:"net_bytes_internal,omitempty"`        // Bytes to internal/private IPs
+	NetBytesInternet       uint64 `json:"net_bytes_internet,omitempty"`        // Bytes to public IPs
+	NetBytesSource         string `json:"net_bytes_source,omitempty"`          // "conntrack" or "estimated"
 }
 
 // Summary contains calculated statistics for a metric

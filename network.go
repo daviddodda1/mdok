@@ -40,12 +40,14 @@ func isPrivateIP(ip net.IP) bool {
 const proxyLabelKey = "mdok.proxy"
 
 // proxyImagePatterns are image substrings that indicate a proxy container
+// These are reverse proxies / API gateways that route traffic to the internet
 var proxyImagePatterns = []string{
 	"traefik",
 	"nginx",
 	"caddy",
 	"haproxy",
 	"envoy",
+	"litellm", // LLM API proxy (OpenAI, Anthropic, etc.)
 }
 
 func isProxyContainer(c container.Summary) bool {
@@ -267,19 +269,174 @@ func (d *DockerClient) readProcNetFile(ctx context.Context, containerID string, 
 	return counts, nil
 }
 
+// NetworkStats contains both connection counts and byte counts
+type NetworkStats struct {
+	// Connection counts (from /proc/net/tcp)
+	ConnInterContainer int
+	ConnInternal       int
+	ConnInternet       int
+
+	// Byte counts (from conntrack, if available)
+	BytesInterContainer uint64
+	BytesInternal       uint64
+	BytesInternet       uint64
+	BytesSource         string // "conntrack" or "estimated"
+}
+
 // getNetworkBreakdown collects connection info and returns classified counts
 func (d *DockerClient) getNetworkBreakdown(ctx context.Context, containerID string) (interContainer, internal, internet int) {
+	stats := d.getNetworkStats(ctx, containerID)
+	return stats.ConnInterContainer, stats.ConnInternal, stats.ConnInternet
+}
+
+// getNetworkStats collects both connection counts and byte counts
+func (d *DockerClient) getNetworkStats(ctx context.Context, containerID string) NetworkStats {
+	var stats NetworkStats
+
 	// Get container IPs on same networks
 	containerIPs, proxyIPs, err := d.getContainerIPs(ctx, containerID)
 	if err != nil {
-		return 0, 0, 0
+		return stats
 	}
 
-	// Classify active connections
-	interContainer, internal, internet, err = d.classifyConnections(ctx, containerID, containerIPs, proxyIPs)
+	// Get this container's own IPs for conntrack filtering
+	selfIPs, err := d.getContainerSelfIPs(ctx, containerID)
 	if err != nil {
-		return 0, 0, 0
+		selfIPs = make(map[string]bool)
 	}
 
-	return interContainer, internal, internet
+	// Try conntrack first for byte counts
+	byteStats, conntrackErr := d.readConntrackBytes(ctx, containerID, containerIPs, proxyIPs, selfIPs)
+	if conntrackErr == nil && (byteStats[0]+byteStats[1]+byteStats[2]) > 0 {
+		stats.BytesInterContainer = byteStats[0]
+		stats.BytesInternal = byteStats[1]
+		stats.BytesInternet = byteStats[2]
+		stats.BytesSource = "conntrack"
+	}
+
+	// Always get connection counts (faster, always available)
+	stats.ConnInterContainer, stats.ConnInternal, stats.ConnInternet, _ = d.classifyConnections(ctx, containerID, containerIPs, proxyIPs)
+
+	// If conntrack failed, estimate bytes from connection ratios
+	if stats.BytesSource == "" && (stats.ConnInterContainer+stats.ConnInternal+stats.ConnInternet) > 0 {
+		stats.BytesSource = "estimated"
+		// Byte estimation will be done in the caller using total network bytes
+	}
+
+	return stats
+}
+
+// getContainerSelfIPs returns all IPs assigned to a container
+func (d *DockerClient) getContainerSelfIPs(ctx context.Context, containerID string) (map[string]bool, error) {
+	selfIPs := make(map[string]bool)
+
+	info, err := d.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return selfIPs, err
+	}
+
+	if info.NetworkSettings != nil {
+		for _, network := range info.NetworkSettings.Networks {
+			if network.IPAddress != "" {
+				selfIPs[network.IPAddress] = true
+			}
+			if network.GlobalIPv6Address != "" {
+				selfIPs[network.GlobalIPv6Address] = true
+			}
+		}
+	}
+
+	return selfIPs, nil
+}
+
+// readConntrackBytes reads /proc/net/nf_conntrack and sums bytes by destination class
+func (d *DockerClient) readConntrackBytes(ctx context.Context, containerID string, containerIPs, proxyIPs, selfIPs map[string]bool) ([3]uint64, error) {
+	var bytes [3]uint64 // [interContainer, internal, internet]
+
+	// Try reading conntrack from container
+	// Note: This requires the container to have access to conntrack (CAP_NET_ADMIN or host netns)
+	execConfig := types.ExecConfig{
+		Cmd:          []string{"cat", "/proc/net/nf_conntrack"},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := d.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return bytes, err
+	}
+
+	resp, err := d.cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	if err != nil {
+		return bytes, err
+	}
+	defer resp.Close()
+
+	scanner := bufio.NewScanner(resp.Reader)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Parse conntrack line format:
+		// ipv4 2 tcp 6 431999 ESTABLISHED src=172.18.0.5 dst=172.18.0.3 sport=45678 dport=5432 packets=100 bytes=12345 ...
+		if !strings.Contains(line, "src=") || !strings.Contains(line, "bytes=") {
+			continue
+		}
+
+		// Extract source IP (to filter to this container's connections)
+		srcIP := extractConntrackField(line, "src=")
+		if srcIP == "" || !selfIPs[srcIP] {
+			continue // Not from this container
+		}
+
+		// Extract destination IP
+		dstIP := extractConntrackField(line, "dst=")
+		if dstIP == "" {
+			continue
+		}
+
+		// Extract bytes (first occurrence is outbound bytes)
+		bytesStr := extractConntrackField(line, "bytes=")
+		if bytesStr == "" {
+			continue
+		}
+		byteCount, err := strconv.ParseUint(bytesStr, 10, 64)
+		if err != nil {
+			continue
+		}
+
+		// Classify destination
+		ip := net.ParseIP(dstIP)
+		if ip == nil {
+			continue
+		}
+
+		if proxyIPs[dstIP] {
+			bytes[2] += byteCount // Internet via proxy
+		} else if containerIPs[dstIP] {
+			bytes[0] += byteCount // Inter-container
+		} else if isPrivateIP(ip) {
+			bytes[1] += byteCount // Internal/private
+		} else {
+			bytes[2] += byteCount // Internet
+		}
+	}
+
+	return bytes, nil
+}
+
+// extractConntrackField extracts a field value from conntrack line (e.g., "src=" -> IP)
+func extractConntrackField(line, prefix string) string {
+	idx := strings.Index(line, prefix)
+	if idx == -1 {
+		return ""
+	}
+
+	start := idx + len(prefix)
+	end := start
+	for end < len(line) && line[end] != ' ' && line[end] != '\t' {
+		end++
+	}
+
+	return line[start:end]
 }

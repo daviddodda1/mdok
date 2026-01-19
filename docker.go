@@ -270,12 +270,16 @@ func (d *DockerClient) CollectStats(ctx context.Context, containerID string, pre
 	// PIDs
 	result.Sample.PidsCount = statsJSON.PidsStats.Current
 
-	// Network breakdown (classify active connections)
+	// Network breakdown (classify active connections and bytes)
 	// This is best-effort and may fail silently
-	interContainer, internal, internet := d.getNetworkBreakdown(ctx, containerID)
-	result.Sample.NetConnInterContainer = interContainer
-	result.Sample.NetConnInternal = internal
-	result.Sample.NetConnInternet = internet
+	netStats := d.getNetworkStats(ctx, containerID)
+	result.Sample.NetConnInterContainer = netStats.ConnInterContainer
+	result.Sample.NetConnInternal = netStats.ConnInternal
+	result.Sample.NetConnInternet = netStats.ConnInternet
+	result.Sample.NetBytesInterContainer = netStats.BytesInterContainer
+	result.Sample.NetBytesInternal = netStats.BytesInternal
+	result.Sample.NetBytesInternet = netStats.BytesInternet
+	result.Sample.NetBytesSource = netStats.BytesSource
 
 	// Store CPU values for next calculation
 	result.PrevCPU = statsJSON.CPUStats.CPUUsage.TotalUsage

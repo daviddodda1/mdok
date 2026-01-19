@@ -78,25 +78,46 @@ func CalculateSummary(samples []Sample) *ContainerSummary {
 	}
 
 	// Calculate network breakdown percentages
-	var totalInterContainer, totalInternal, totalInternet int
-	var samplesWithConnections int
+	// Prefer byte-based data (from conntrack) when available, fall back to connection counts
+	var totalBytesInterContainer, totalBytesInternal, totalBytesInternet uint64
+	var totalConnInterContainer, totalConnInternal, totalConnInternet int
+	var samplesWithBytes, samplesWithConnections int
 
 	for _, s := range samples {
+		// Check for byte-based data (conntrack)
+		totalBytes := s.NetBytesInterContainer + s.NetBytesInternal + s.NetBytesInternet
+		if totalBytes > 0 {
+			totalBytesInterContainer += s.NetBytesInterContainer
+			totalBytesInternal += s.NetBytesInternal
+			totalBytesInternet += s.NetBytesInternet
+			samplesWithBytes++
+		}
+
+		// Also collect connection counts as fallback
 		totalConns := s.NetConnInterContainer + s.NetConnInternal + s.NetConnInternet
 		if totalConns > 0 {
-			totalInterContainer += s.NetConnInterContainer
-			totalInternal += s.NetConnInternal
-			totalInternet += s.NetConnInternet
+			totalConnInterContainer += s.NetConnInterContainer
+			totalConnInternal += s.NetConnInternal
+			totalConnInternet += s.NetConnInternet
 			samplesWithConnections++
 		}
 	}
 
-	if samplesWithConnections > 0 && (totalInterContainer+totalInternal+totalInternet) > 0 {
-		totalConns := float64(totalInterContainer + totalInternal + totalInternet)
+	// Use byte-based breakdown if available (more accurate)
+	if samplesWithBytes > 0 && (totalBytesInterContainer+totalBytesInternal+totalBytesInternet) > 0 {
+		totalBytes := float64(totalBytesInterContainer + totalBytesInternal + totalBytesInternet)
 		summary.NetworkBreakdown = &NetworkBreakdown{
-			InterContainerPct: float64(totalInterContainer) / totalConns * 100,
-			InternalPct:       float64(totalInternal) / totalConns * 100,
-			InternetPct:       float64(totalInternet) / totalConns * 100,
+			InterContainerPct: float64(totalBytesInterContainer) / totalBytes * 100,
+			InternalPct:       float64(totalBytesInternal) / totalBytes * 100,
+			InternetPct:       float64(totalBytesInternet) / totalBytes * 100,
+		}
+	} else if samplesWithConnections > 0 && (totalConnInterContainer+totalConnInternal+totalConnInternet) > 0 {
+		// Fall back to connection-based estimate
+		totalConns := float64(totalConnInterContainer + totalConnInternal + totalConnInternet)
+		summary.NetworkBreakdown = &NetworkBreakdown{
+			InterContainerPct: float64(totalConnInterContainer) / totalConns * 100,
+			InternalPct:       float64(totalConnInternal) / totalConns * 100,
+			InternetPct:       float64(totalConnInternet) / totalConns * 100,
 		}
 	}
 
