@@ -456,10 +456,11 @@ mdok estimates AWS data transfer costs to help with budgeting.
 - Doesn't track inter-container traffic on bridge network (local, not charged)
 - Assumes all outbound goes to internet (not same-region S3, etc.)
 - Pricing may be outdated — verify current rates at aws.amazon.com/ec2/pricing
-- Containers with image or name containing `traefik` or `nginx` are treated as
-  egress proxies, so connections to them count as internet traffic.
-- You can also force proxy classification by labeling a container with
-  `mdok.proxy=true`.
+- Containers with image or name containing `traefik`, `nginx`, `caddy`, `haproxy`,
+  or `envoy` are treated as egress proxies, so connections to them count as
+  internet traffic. Proxy detection works across all networks (not just shared ones).
+- You can force proxy classification by labeling a container with `mdok.proxy=true`,
+  or exclude a container from proxy detection with `mdok.proxy=false`.
 
 ---
 

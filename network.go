@@ -39,20 +39,38 @@ func isPrivateIP(ip net.IP) bool {
 
 const proxyLabelKey = "mdok.proxy"
 
+// proxyImagePatterns are image substrings that indicate a proxy container
+var proxyImagePatterns = []string{
+	"traefik",
+	"nginx",
+	"caddy",
+	"haproxy",
+	"envoy",
+}
+
 func isProxyContainer(c container.Summary) bool {
+	// Explicit label takes precedence (can also be used to exclude with "false")
 	if val, ok := c.Labels[proxyLabelKey]; ok {
+		// Return false for explicit "false"/"no"/"0" to allow excluding containers
+		if strings.EqualFold(val, "false") || strings.EqualFold(val, "no") || strings.EqualFold(val, "0") {
+			return false
+		}
 		return strings.EqualFold(val, "true") || strings.EqualFold(val, "1") || strings.EqualFold(val, "yes")
 	}
 
 	image := strings.ToLower(c.Image)
-	if strings.Contains(image, "traefik") || strings.Contains(image, "nginx") {
-		return true
+	for _, pattern := range proxyImagePatterns {
+		if strings.Contains(image, pattern) {
+			return true
+		}
 	}
 
 	for _, name := range c.Names {
 		lower := strings.ToLower(name)
-		if strings.Contains(lower, "traefik") || strings.Contains(lower, "nginx") {
-			return true
+		for _, pattern := range proxyImagePatterns {
+			if strings.Contains(lower, pattern) {
+				return true
+			}
 		}
 	}
 
@@ -60,7 +78,8 @@ func isProxyContainer(c container.Summary) bool {
 }
 
 // getContainerIPs gets all IPs of containers in the same Docker networks.
-// It also returns a subset of those IPs that belong to proxy containers.
+// It also returns ALL proxy container IPs (regardless of network) so that
+// traffic through proxies on different networks is correctly classified.
 func (d *DockerClient) getContainerIPs(ctx context.Context, targetContainerID string) (map[string]bool, map[string]bool, error) {
 	containerIPs := make(map[string]bool)
 	proxyIPs := make(map[string]bool)
@@ -85,10 +104,34 @@ func (d *DockerClient) getContainerIPs(ctx context.Context, targetContainerID st
 		return containerIPs, proxyIPs, err
 	}
 
-	// Find containers on same networks and collect their IPs
+	// First pass: collect ALL proxy IPs (regardless of network)
+	// This ensures traffic to proxies on different networks is classified as internet
 	for _, c := range containers {
 		if c.ID == targetContainerID {
-			continue // Skip self
+			continue
+		}
+
+		if isProxyContainer(c) {
+			for _, network := range c.NetworkSettings.Networks {
+				if network.IPAddress != "" {
+					proxyIPs[network.IPAddress] = true
+				}
+				if network.GlobalIPv6Address != "" {
+					proxyIPs[network.GlobalIPv6Address] = true
+				}
+			}
+		}
+	}
+
+	// Second pass: collect IPs of non-proxy containers on same networks
+	for _, c := range containers {
+		if c.ID == targetContainerID {
+			continue
+		}
+
+		// Skip proxies - they're already handled and shouldn't count as inter-container
+		if isProxyContainer(c) {
+			continue
 		}
 
 		// Check if this container shares any networks
@@ -101,20 +144,12 @@ func (d *DockerClient) getContainerIPs(ctx context.Context, targetContainerID st
 		}
 
 		if sharesNetwork {
-			isProxy := isProxyContainer(c)
-			// Collect all IPs from this container
 			for _, network := range c.NetworkSettings.Networks {
 				if network.IPAddress != "" {
 					containerIPs[network.IPAddress] = true
-					if isProxy {
-						proxyIPs[network.IPAddress] = true
-					}
 				}
 				if network.GlobalIPv6Address != "" {
 					containerIPs[network.GlobalIPv6Address] = true
-					if isProxy {
-						proxyIPs[network.GlobalIPv6Address] = true
-					}
 				}
 			}
 		}
